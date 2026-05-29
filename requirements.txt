@@ -1,0 +1,5 @@
+pandas
+plotly
+yfinance
+PySide6
+pyinstaller
