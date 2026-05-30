@@ -21,7 +21,7 @@ import tempfile
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, QObject, Signal, QUrl
+from PySide6.QtCore import Qt, QThread, QObject, Signal, QUrl, QTimer
 from PySide6.QtGui import QFont, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -496,9 +496,51 @@ def _selftest():
         log.write_text("FAIL\n" + traceback.format_exc())
 
 
+def _webtest():
+    """Headless render check: load a real chart into QWebEngineView and confirm
+    Plotly actually drew it. Validates the *bundled* WebEngine + its resources
+    (catches a broken/over-pruned Chromium bundle that a data-only test misses)."""
+    log = Path(tempfile.gettempdir()) / "rs_webtest.log"
+    try:
+        res = rs.analyze("AAPL", "SPY", "1y", "daily")
+        html = rs.build_chart("AAPL", "SPY", res).to_html(include_plotlyjs=True, full_html=True)
+        page_path = Path(tempfile.gettempdir()) / "rs_webtest.html"
+        page_path.write_text(html, encoding="utf-8")
+    except Exception:
+        log.write_text("FAIL build\n" + traceback.format_exc())
+        return
+
+    app = QApplication(sys.argv)
+    view = QWebEngineView()
+    state = {"done": False}
+
+    def finish(msg):
+        if not state["done"]:
+            state["done"] = True
+            log.write_text(msg + "\n")
+            app.quit()
+
+    def on_load(ok):
+        if not ok:
+            finish("FAIL load=False"); return
+        # Give Plotly a beat to draw, then count its rendered containers.
+        QTimer.singleShot(800, lambda: view.page().runJavaScript(
+            "document.querySelectorAll('.plotly').length",
+            lambda n: finish(f"OK plotly_nodes={n}" if n else "FAIL plotly_nodes=0")))
+
+    view.loadFinished.connect(on_load)
+    view.load(QUrl.fromLocalFile(str(page_path)))
+    QTimer.singleShot(25000, lambda: finish("FAIL timeout"))
+    view.resize(900, 700); view.show()
+    app.exec()
+
+
 def main():
     if os.environ.get("RS_SELFTEST"):
         _selftest()
+        return
+    if os.environ.get("RS_WEBTEST"):
+        _webtest()
         return
     app = QApplication(sys.argv)
     app.setApplicationName("Relative Strength Scanner")
