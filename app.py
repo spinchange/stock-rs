@@ -14,11 +14,13 @@ Run during development:
     python app.py
 """
 
+import csv
 import json
 import os
 import sys
 import tempfile
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, QObject, Signal, QUrl
@@ -36,6 +38,9 @@ import universe
 
 CHART_PATH = Path(tempfile.gettempdir()) / "rs_chart.html"
 WATCHLIST_PATH = Path.home() / ".rs-scanner" / "watchlist.json"
+# Synced Google Drive folder for CSV exports (open the file in Drive ->
+# Google Sheets converts it). Falls back to a save dialog if unavailable.
+EXPORT_DIR = Path(r"I:\My Drive\stock-rs")
 
 
 # --------------------------------------------------------------------------
@@ -116,6 +121,15 @@ class NumericItem(QTableWidgetItem):
         if isinstance(other, NumericItem):
             return bool(self.value < other.value)
         return super().__lt__(other)
+
+
+# Strength order for the Verdict column (must match the strings in rs.py).
+VERDICT_RANK = {
+    "STRONG & STRENGTHENING": 3,
+    "STRONG, but momentum cooling": 2,
+    "LAGGING, but improving": 1,
+    "WEAK / LAGGING the market": 0,
+}
 
 
 # --------------------------------------------------------------------------
@@ -204,8 +218,13 @@ class MainWindow(QMainWindow):
         self.remove_btn.setToolTip("Remove selected row(s) from the watchlist  (Del)")
         self.scan_btn = QPushButton("Scan"); self.scan_btn.setMinimumWidth(90)
         self.scan_btn.clicked.connect(self.run_scan); self.scan_btn.setDefault(True)
+        self.export_btn = QPushButton("Export CSV")
+        self.export_btn.setToolTip(f"Save the table to {EXPORT_DIR} (syncs to Google Drive)")
+        self.export_btn.clicked.connect(
+            lambda: self._export_table(self.table, "watchlist", self.scan_status))
         row.addWidget(QLabel("Watchlist:")); row.addWidget(self.list_in, stretch=1)
-        row.addWidget(self.csv_btn); row.addWidget(self.remove_btn); row.addWidget(self.scan_btn)
+        row.addWidget(self.csv_btn); row.addWidget(self.remove_btn)
+        row.addWidget(self.scan_btn); row.addWidget(self.export_btn)
         lay.addLayout(row)
 
         self.scan_status = QLabel(
@@ -251,8 +270,12 @@ class MainWindow(QMainWindow):
         self.topn_in.setToolTip("How many of the strongest names to show")
         self.market_btn = QPushButton("Rank S&P 500"); self.market_btn.setMinimumWidth(130)
         self.market_btn.clicked.connect(self.run_market); self.market_btn.setDefault(True)
+        self.market_export_btn = QPushButton("Export CSV")
+        self.market_export_btn.setToolTip(f"Save the table to {EXPORT_DIR} (syncs to Google Drive)")
+        self.market_export_btn.clicked.connect(
+            lambda: self._export_table(self.market_table, "market-leaders", self.market_status))
         row.addWidget(QLabel("Show:")); row.addWidget(self.topn_in)
-        row.addWidget(self.market_btn); row.addStretch(1)
+        row.addWidget(self.market_btn); row.addWidget(self.market_export_btn); row.addStretch(1)
         lay.addLayout(row)
 
         self.market_status = QLabel(
@@ -388,12 +411,15 @@ class MainWindow(QMainWindow):
             tick = QTableWidgetItem(r["ticker"]); tick.setFont(QFont("Segoe UI", 10, QFont.Bold))
             table.setItem(i, self._col("Ticker"), tick)
             if "error" in r:
-                err = QTableWidgetItem(f"— {r['error']}"); err.setForeground(QColor("#94a3b8"))
+                err = NumericItem(f"— {r['error']}", -1)
+                err.setForeground(QColor("#94a3b8"))
+                err.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 table.setItem(i, self._col("Verdict"), err)
                 for name in self.cols[2:]:
                     table.setItem(i, self._col(name), NumericItem("—", float("-inf")))
                 continue
-            verdict = QTableWidgetItem(r["verdict"])
+            verdict = NumericItem(r["verdict"], VERDICT_RANK.get(r["verdict"], -1))
+            verdict.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             verdict.setForeground(QColor(r["vcolor"])); verdict.setFont(QFont("Segoe UI", 10, QFont.Bold))
             table.setItem(i, self._col("Verdict"), verdict)
 
@@ -410,6 +436,31 @@ class MainWindow(QMainWindow):
             table.setItem(i, self._col("RS slope"), self._signed_item(r["slope"]))
         table.setSortingEnabled(True)
         table.sortItems(self._col("RS Rating"), Qt.DescendingOrder)   # strongest first
+
+    def _export_table(self, table, stem, status):
+        """Write the table (in its current sort order) to a timestamped CSV."""
+        if table.rowCount() == 0:
+            status.setText("Nothing to export yet — run a scan first.")
+            return
+        name = f"{stem}_{datetime.now():%Y-%m-%d_%H%M%S}.csv"
+        try:
+            EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+            path = EXPORT_DIR / name
+        except OSError:   # Drive letter not mounted on this machine
+            chosen, _ = QFileDialog.getSaveFileName(self, "Export CSV", name, "CSV (*.csv)")
+            if not chosen:
+                return
+            path = Path(chosen)
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(self.cols)
+            for i in range(table.rowCount()):
+                writer.writerow([
+                    table.item(i, c).text() if table.item(i, c) else ""
+                    for c in range(len(self.cols))
+                ])
+        status.setText(f"Exported {table.rowCount()} rows → {path}   "
+                       f"(syncs to Google Drive; open there to view as a Sheet)")
 
     def _open_row_chart(self, item):
         table = item.tableWidget()
