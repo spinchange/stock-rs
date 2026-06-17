@@ -16,7 +16,8 @@ A desktop stock-chart app for checking relative strength versus a benchmark and 
 - `rs.py` — core relative-strength engine and CLI
 - `scan.py` — watchlist and market scan logic
 - `universe.py` — RS Rating / S&P 500 universe logic
-- `RS.spec` — PyInstaller packaging spec
+- `RS.spec` — PyInstaller packaging spec (excludes unused Qt modules / heavy deps)
+- `build.ps1` — one-command build: PyInstaller + English-only translation prune
 
 ## Local setup
 
@@ -34,8 +35,18 @@ python rs.py NVDA --benchmark QQQ --period 3y --timeframe weekly --no-open
 
 ## Build a Windows executable
 
-```bash
-pyinstaller RS.spec
+```powershell
+pwsh -File build.ps1
 ```
 
-The packaged executable is intentionally not committed here because the generated `dist/` folder is very large. Rebuild it locally when needed.
+This builds from `RS.spec` (which excludes unused Qt modules and heavy unused
+packages) and then prunes the bundled Qt/WebEngine translations to English,
+producing a self-contained `dist\RS\` folder. Run `RS.exe` inside it, or zip the
+folder to distribute. Expect ~625 MB — the floor is Qt WebEngine's bundled
+Chromium engine, which can't be removed from an embedded-browser app.
+
+To validate a packaged build headlessly, set `RS_SELFTEST=1` (data path) or
+`RS_WEBTEST=1` (WebEngine actually renders a chart) when launching `RS.exe`; each
+writes a result line to `rs_selftest.log` / `rs_webtest.log` in the temp dir.
+
+The `dist/` folder is large and git-ignored, so it is not committed — rebuild locally.
